@@ -1,0 +1,112 @@
+- name: Установить Docker
+  shell: curl -fsSL https://get.docker.com | sh
+  args:
+    creates: /usr/bin/docker
+
+- name: Создать каталог проекта
+  file:
+    path: "{{ remnanode_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Создать .env для remnanode
+  copy:
+    dest: "{{ remnanode_dir }}/.env"
+    content: |
+      APP_PORT={{ app_port }}
+      {{ ssl_cert }}
+
+- name: Создать docker-compose.yml
+  copy:
+    dest: "{{ remnanode_dir }}/docker-compose.yml"
+    content: |
+      services:
+        remnanode:
+          container_name: remnanode
+          hostname: remnanode
+          image: remnawave/node:latest
+          restart: always
+          network_mode: host
+          env_file:
+            - .env
+
+- name: Запустить контейнер remnanode через Docker Compose
+  shell: |
+    docker compose up -d
+  args:
+    chdir: "{{ remnanode_dir }}"
+
+- name: Показать логи контейнера remnanode
+  shell: |
+    docker compose logs -f -t
+  args:
+    chdir: "{{ remnanode_dir }}"
+  async: 60
+  poll: 0
+
+- name: Создать ноду через RemnaWave API
+  uri:
+    url: "{{ api_url }}"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ api_token }}"
+      Content-Type: "application/json"
+    body: |
+      {
+        "name": "{{ server_name }}",
+        "address": "{{ ansible_host }}",
+        "port": 2222,
+        "isTrafficTrackingActive": false,
+        "trafficLimitBytes": 0,
+        "notifyPercent": 0,
+        "trafficResetDay": 1,
+        "countryCode": "{{ location }}",
+        "consumptionMultiplier": 0.1,
+        "configProfile": {
+          "activeConfigProfileUuid": "{{ remnawave_profile }}",
+          "activeInbounds": ["{{ remnawave_inbound }}"]
+        },
+        "providerUuid": null
+      }
+    body_format: json
+    return_content: yes
+    status_code: 201
+  register: create_node_response
+
+- name: Сохранить UUID новой ноды
+  set_fact:
+    new_node_uuid: "{{ create_node_response.json.response.uuid }}"
+
+- name: Пауза 20 секунд
+  pause:
+    seconds: 20
+
+- name: Получить список всех нод (свежий список с учётом новой)
+  uri:
+    url: "{{ api_url }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ api_token }}"
+    return_content: yes
+  register: node_status_response
+
+- name: Найти новую ноду по UUID
+  set_fact:
+    target_node: "{{ node_status_response.json.response
+      | selectattr('uuid', 'equalto', new_node_uuid)
+      | list
+      | first }}"
+
+- name: Показать статус выбранной ноды
+  debug:
+    msg: |
+      Имя: {{ target_node.name }}
+      UUID: {{ target_node.uuid }}
+      Онлайн: {{ target_node.isNodeOnline }}
+      isConnected: {{ target_node.isConnected }}
+      Последний статус: {{ target_node.lastStatusMessage }}
+  when: target_node is defined and target_node is not none
+
+- name: Показать ответ API
+  debug:
+    var: create_node_result.content

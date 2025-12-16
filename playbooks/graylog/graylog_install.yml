@@ -1,0 +1,13 @@
+- name: Graylog install
+  copy:
+    content: "*.* @graylog.domain.com:5140"
+    dest: /etc/rsyslog.d/60-graylog.conf
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Ребут rsyslog
+  systemd:
+    name: rsyslog
+    enabled: yes
+    state: restarted

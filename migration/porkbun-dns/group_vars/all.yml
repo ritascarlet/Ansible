@@ -1,3 +1,0 @@
-porkbun_api_key: "{{ vault_porkbun_api_key | default('CHANGE_ME') }}"
-porkbun_secret_api_key: "{{ vault_porkbun_secret_api_key | default('CHANGE_ME') }}"
-porkbun_domain: "{{ vault_porkbun_domain | default('CHANGE_ME') }}"

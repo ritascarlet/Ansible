@@ -1,0 +1,79 @@
+- name: Получить Teleport invite token по SSH
+  shell: ssh {{ teleport_auth_host }} "sudo tctl tokens add --type=node"
+  register: teleport_token_result
+  failed_when: teleport_token_result.rc != 0
+  changed_when: false
+  delegate_to: localhost
+
+- name: Показать полный вывод команды
+  debug:
+    var: teleport_token_result.stdout_lines
+  delegate_to: localhost
+
+- name: Извлечь invite token из вывода
+  set_fact:
+    teleport_invite_token: "{{ teleport_token_result.stdout | regex_search('token: ([a-zA-Z0-9]+)', '\\1') | first }}"
+  delegate_to: localhost
+
+- name: Проверить что токен извлечен
+  fail:
+    msg: "Не удалось извлечь токен из вывода команды"
+  when: teleport_invite_token is not defined or teleport_invite_token == ""
+  delegate_to: localhost
+
+- name: Показать полученный invite token
+  debug:
+    msg: "Teleport invite token: {{ teleport_invite_token }}"
+  delegate_to: localhost
+
+- name: Проверить наличие токена Teleport
+  fail:
+    msg: "Токен Teleport не найден! Проверьте выполнение предыдущего плейбука"
+  when: teleport_invite_token is not defined or teleport_invite_token == ""
+  delegate_to: localhost
+
+- name: Скачать Teleport DEB
+  get_url:
+    url: "{{ teleport_package_url }}"
+    dest: "{{ teleport_package_path }}"
+    mode: "0644"
+
+- name: Установить Teleport
+  apt:
+    deb: "{{ teleport_package_path }}"
+    state: present
+
+- name: Подготовить labels для Teleport
+  set_fact:
+    teleport_labels: "{{ dict([(group | default(inventory_hostname), server_name | default(inventory_hostname))]) }}"
+
+- name: Развернуть teleport.yaml из шаблона
+  template:
+    src: teleport.yaml.j2
+    dest: /etc/teleport.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    teleport_invite_token: "{{ teleport_invite_token }}"
+    teleport_nodename: "{{ inventory_hostname }}"
+    teleport_labels: "{{ teleport_labels }}"
+
+- name: Перечитать systemd
+  command: systemctl daemon-reload
+  changed_when: false
+
+- name: Включить и запустить teleport
+  systemd:
+    name: teleport
+    state: restarted
+    enabled: yes
+
+- name: Проверить статус сервиса teleport
+  systemd:
+    name: teleport
+  register: teleport_status
+
+- name: Показать статус сервиса
+  debug:
+    msg: "Teleport сервис {{ 'запущен' if teleport_status.status.ActiveState == 'active' else 'не запущен' }}"

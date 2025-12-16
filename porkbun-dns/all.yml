@@ -1,7 +1,0 @@
-remnawave_token: "{{ vault_remnawave_token | default('CHANGE_ME') }}"
-remnawave_domain: "{{ vault_remnawave_domain | default('CHANGE_ME') }}"
-porkbun_api_key: "{{ vault_porkbun_api_key | default('CHANGE_ME') }}"
-porkbun_secret_api_key: "{{ vault_porkbun_secret_api_key | default('CHANGE_ME') }}"
-target_domains:
-  - "{{ vault_target_domain_1 | default('CHANGE_ME') }}"
-#  - "{{ vault_target_domain_2 | default('CHANGE_ME') }}"

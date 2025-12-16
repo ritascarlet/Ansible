@@ -1,0 +1,119 @@
+- name: Check if Docker is installed
+  command: docker --version
+  register: docker_check
+  ignore_errors: yes
+  changed_when: false
+
+- name: Fail if Docker is not installed
+  fail:
+    msg: "Docker is not installed. Please install Docker first."
+  when: docker_check.rc != 0
+
+- name: Create working directories on server
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ working_dir }}"
+    - "{{ working_dir }}/data"
+    - "{{ working_dir }}/logs"
+    - "/var/www/domain.com"
+    - "/var/www/domain.com"
+
+- name: Copy Caddyfile
+  copy:
+    src: "{{ base_dir }}/caddy/Caddyfile"
+    dest: "{{ working_dir }}/Caddyfile"
+    mode: "0644"
+
+- name: Copy domain.com website files
+  copy:
+    src: "{{ base_dir }}/domain.com/"
+    dest: "/var/www/domain.com/"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Copy domain.com website files
+  copy:
+    src: "{{ base_dir }}/domain.com/"
+    dest: "/var/www/domain.com/"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Copy docker-compose.yml
+  copy:
+    src: "{{ base_dir }}/caddy/docker-compose.yml"
+    dest: "{{ working_dir }}/docker-compose.yml"
+    mode: "0644"
+
+- name: Copy Dockerfile
+  copy:
+    src: "{{ base_dir }}/caddy/Dockerfile"
+    dest: "{{ working_dir }}/Dockerfile"
+    mode: "0644"
+
+- name: Запустить контейнер remnanode через Docker Compose
+  command: docker compose down
+  args:
+    chdir: "{{ working_dir }}"
+
+- name: Запустить контейнер remnanode через Docker Compose
+  command: docker compose up -d
+  args:
+    chdir: "{{ working_dir }}"
+
+- name: Fetch Caddy container name
+  command: >
+    docker ps --format "{{'{{.Names}}'}}"
+    --filter "name=caddy"
+    --filter "status=running"
+  register: caddy_container_search
+  changed_when: false
+
+- name: Fail if no running Caddy container found
+  fail:
+    msg: "No running Caddy container found. Check docker-compose and container status."
+  when: caddy_container_search.stdout_lines | length == 0
+
+- name: Set Caddy container name
+  set_fact:
+    caddy_container_name: "{{ caddy_container_search.stdout_lines | first }}"
+
+- name: Wait for Caddy to start
+  wait_for:
+    port: 80
+    host: 127.0.0.1
+    delay: 2
+    timeout: 30
+
+- name: Check HTTP to HTTPS redirect for domain.com
+  uri:
+    url: "http://localhost/"
+    method: GET
+    headers:
+      Host: "domain.com"
+    status_code: 301
+    follow_redirects: no
+  register: redirect_check_mos
+
+- name: Check HTTP to HTTPS redirect for domain.com
+  uri:
+    url: "http://localhost/"
+    method: GET
+    headers:
+      Host: "domain.com"
+    status_code: 301
+    follow_redirects: no
+  register: redirect_check_rebar
+
+- name: Show directory structure with tree
+  command: tree "{{ working_dir }}"
+  register: tree_output
+  changed_when: false
+
+- name: Display tree output
+  debug:
+    msg: |
+      🌲 Directory Structure:
+      {{ tree_output.stdout }}

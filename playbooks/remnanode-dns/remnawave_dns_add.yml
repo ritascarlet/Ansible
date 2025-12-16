@@ -1,0 +1,248 @@
+# ============================================================================
+# ВАЖНО: Этот плейбук ТОЛЬКО СОЗДАЕТ DNS записи, НИ В КОЕМ СЛУЧАЕ НЕ УДАЛЯЕТ!
+# Используется только API endpoint /dns/create/ для добавления A-записей.
+# Существующие записи остаются без изменений.
+# ============================================================================
+
+# --- ШАГ 0: Проверка необходимых переменных ---
+- name: ✅ Проверить наличие porkbun_api_key
+  fail:
+      msg: "Переменная 'porkbun_api_key' не определена!"
+  when: porkbun_api_key is not defined or porkbun_api_key == ""
+  run_once: true
+  delegate_to: localhost
+
+- name: ✅ Проверить наличие porkbun_secret_api_key
+  fail:
+      msg: "Переменная 'porkbun_secret_api_key' не определена!"
+  when: porkbun_secret_api_key is not defined or porkbun_secret_api_key == ""
+  run_once: true
+  delegate_to: localhost
+
+- name: ✅ Проверить что domains_to_process не пуст
+  fail:
+      msg: "Переменная 'domains_to_process' пуста или не определена! Укажите хотя бы один домен."
+  when: domains_to_process | default([]) | length == 0
+  run_once: true
+  delegate_to: localhost
+
+# --- ШАГ 1: Собрать IP адреса из inventory для серверов со статусом "new" ---
+- name: 🧩 Собрать IP адреса серверов со статусом "new"
+  set_fact:
+      new_servers_ips: "{{ new_servers_ips | default([]) + [hostvars[item].ansible_host] }}"
+  loop: "{{ groups['servers'] | default([]) }}"
+  when:
+      - hostvars[item].status | default('') == 'new'
+      - hostvars[item].ansible_host is defined
+  run_once: true
+  delegate_to: localhost
+
+- name: 🧩 Убрать дубликаты IP адресов
+  set_fact:
+      new_servers_ips: "{{ new_servers_ips | default([]) | unique | list }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: 📄 Вывести список серверов из inventory для DNS
+  debug:
+      msg: |-
+          СЕРВЕРЫ ИЗ INVENTORY ({{ new_servers_ips | length }} шт.):
+          {% for ip in new_servers_ips %}
+          {{ "%2d" % loop.index }}) {{ ip }}
+          {% endfor %}
+  run_once: true
+  delegate_to: localhost
+  when: new_servers_ips | length > 0
+
+- name: 🟡 Нет серверов со статусом "new" — пропускаем DNS-операции
+  debug:
+      msg: "Нет серверов со статусом 'new' в inventory. Ничего делать не нужно."
+  run_once: true
+  delegate_to: localhost
+  when: new_servers_ips | length == 0
+
+# --- ШАГ 2: Для каждого домена получить все DNS-записи ---
+- name: 🔍 Получить все DNS-записи для домена
+  uri:
+      url: "https://api.porkbun.com/api/json/v3/dns/retrieve/{{ item }}"
+      method: POST
+      body:
+          apikey: "{{ porkbun_api_key }}"
+          secretapikey: "{{ porkbun_secret_api_key }}"
+      body_format: json
+      return_content: yes
+  register: dns_retrieve_results
+  ignore_errors: yes
+  loop: "{{ domains_to_process }}"
+  loop_control:
+      label: "{{ item }}"
+  run_once: true
+  delegate_to: localhost
+
+# --- ДЕБАГ: Вывести сырые DNS-записи для отладки ---
+- name: 🐞 DEBUG — Сырые DNS-записи для домена
+  debug:
+      var: result.json.records
+  loop: "{{ domains_to_process }}"
+  loop_control:
+      label: "{{ item }}"
+  vars:
+      result: "{{ dns_retrieve_results.results | selectattr('item', 'equalto', item) | first }}"
+  when: result.json is defined and result.json.status == "SUCCESS"
+  run_once: true
+  delegate_to: localhost
+
+# --- ШАГ 3: Проверить ошибки Porkbun API ---
+- name: ❌ Проверить ошибку Porkbun API для домена
+  fail:
+      msg: "Porkbun API error for {{ item }}: {{ result.json.message | default('Unknown') }}"
+  when: result.json is defined and result.json.status != "SUCCESS"
+  loop: "{{ domains_to_process }}"
+  loop_control:
+      label: "{{ item }}"
+  vars:
+      result: "{{ dns_retrieve_results.results | selectattr('item', 'equalto', item) | first }}"
+  run_once: true
+  delegate_to: localhost
+
+- name: 🧩 Построить existing_ips_map (только A-записи для apex-домена)
+  set_fact:
+      existing_ips_map: >-
+          {{
+            existing_ips_map | default({}) | combine({
+              item: (
+                (
+                  (dns_retrieve_results.results | selectattr('item', 'equalto', item) | first | default({}))
+                  .json.records | default([])
+                )
+                | selectattr('type', 'equalto', 'A')
+                | selectattr('name', 'equalto', item)
+                | map(attribute='content')
+                | map('trim')
+                | list
+                | unique
+              )
+            })
+          }}
+  loop: "{{ domains_to_process }}"
+  loop_control:
+      label: "{{ item }}"
+  run_once: true
+  delegate_to: localhost
+  delegate_facts: true
+
+# --- ДЕБАГ: Вывести existing_ips_map ---
+- name: 🐞 DEBUG — existing_ips_map (текущие IP по доменам)
+  debug:
+      var: existing_ips_map
+  run_once: true
+  delegate_to: localhost
+
+- name: 🚀 Создать отсутствующие A-записи (для apex-домена)
+  uri:
+      url: "https://api.porkbun.com/api/json/v3/dns/create/{{ domain }}"
+      method: POST
+      body:
+          apikey: "{{ porkbun_api_key }}"
+          secretapikey: "{{ porkbun_secret_api_key }}"
+          name: ""
+          type: "A"
+          content: "{{ server_ip }}"
+          ttl: "300"
+      body_format: json
+      status_code: [200, 400]
+  loop: "{{ new_servers_ips | product(domains_to_process) | list }}"
+  loop_control:
+      loop_var: pair
+      label: "{{ pair.1 }} → {{ pair.0 }}"
+  vars:
+      server_ip: "{{ pair.0 }}"
+      domain: "{{ pair.1 }}"
+      existing_ips: "{{ existing_ips_map[domain] | default([]) | map('trim') | list }}"
+      inventory_ip: "{{ server_ip | trim }}"
+  when:
+      - new_servers_ips | length > 0
+      - inventory_ip not in existing_ips
+  register: create_results
+  failed_when: false
+  changed_when: create_results.status == 200
+  run_once: true
+  delegate_to: localhost
+
+# --- ДЕБАГ: Сравнение IP по доменам ---
+- name: 🐞 DEBUG — Сравнение IP по домену
+  debug:
+      msg: |-
+          Домен: {{ domain }}
+          IP из inventory: {{ inventory_ips }}
+          Существующие IP: {{ existing_ips }}
+          Отсутствующие IP: {{ missing_ips }}
+  loop: "{{ domains_to_process }}"
+  loop_control:
+      label: "{{ domain }}"
+  vars:
+      domain: "{{ item }}"
+      existing_ips: "{{ existing_ips_map[item] | default([]) | map('trim') | list }}"
+      inventory_ips: "{{ new_servers_ips | default([]) | map('trim') | list | unique }}"
+      missing_ips: "{{ inventory_ips | difference(existing_ips) }}"
+  run_once: true
+  delegate_to: localhost
+
+# --- Уведомление: сколько записей создано по каждому домену ---
+- name: ✅ Успешно созданы записи — сводка по доменам
+  debug:
+      msg: "✅ В домене {{ domain }} создано A-записей: {{ count }}"
+  loop: "{{ domains_to_process }}"
+  loop_control:
+      label: "{{ domain }}"
+  vars:
+      domain: "{{ item }}"
+      count: >-
+          {% set records = create_results.results | default([]) %}
+          {% set total = 0 %}
+          {% for rec in records %}
+            {% if rec.changed is defined and rec.changed and rec.item is defined and rec.item | length >= 2 and rec.item[1] == domain %}
+              {% set total = total + 1 %}
+            {% endif %}
+          {% endfor %}
+          {{ total }}
+  run_once: true
+  delegate_to: localhost
+
+# --- Уведомление: если создавать нечего ---
+- name: ℹ️ Записи не требуются — все IP уже есть
+  debug:
+      msg: "ℹ️ Все серверы из inventory уже имеют A-записи в домене {{ domain }}"
+  loop: "{{ domains_to_process }}"
+  loop_control:
+      label: "{{ domain }}"
+  vars:
+      domain: "{{ item }}"
+      existing_ips: "{{ existing_ips_map[item] | default([]) | map('trim') | list }}"
+      inventory_ips: "{{ new_servers_ips | default([]) | map('trim') | list | unique }}"
+      missing: "{{ inventory_ips | difference(existing_ips) }}"
+  when: missing | length == 0
+  run_once: true
+  delegate_to: localhost
+
+# --- ФИНАЛ: Итоговая сводка ---
+- name: 📊 Итоговая сводка
+  debug:
+      msg: |-
+
+          Синхронизация DNS завершена.
+
+          Серверов из inventory {{ new_servers_ips | length }}
+
+          Целевых доменов {{ domains_to_process | length }}
+
+  when: new_servers_ips | length > 0
+  run_once: true
+  delegate_to: localhost
+
+- name: 📊 Синхронизация не требовалась — серверов нет
+  debug:
+      msg: "ℹ️ Синхронизация не проводилась — серверов со статусом 'new' не обнаружено."
+  when: new_servers_ips | length == 0
+  run_once: true
+  delegate_to: localhost

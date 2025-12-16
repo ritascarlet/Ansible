@@ -1,5 +1,0 @@
-teleport_token: "{{ vault_teleport_token | default('CHANGE_ME') }}"
-teleport_auth_server: "{{ vault_teleport_auth_server | default('CHANGE_ME:443') }}"
-teleport_nodename: "{{ inventory_hostname }}"
-teleport_labels:
-  vpn: "{{ server_name }}"

@@ -1,0 +1,29 @@
+version: v3
+
+teleport:
+  nodename: {{ teleport_nodename | default(inventory_hostname) }}
+  data_dir: /var/lib/teleport
+  join_params:
+    method: token
+    token_name: "{{ teleport_invite_token }}"
+  proxy_server: "{{ teleport_proxy_server }}"
+  ca_pin: "{{ teleport_ca_pin }}"
+  log:
+    output: stderr
+    severity: INFO
+    format:
+      output: text
+  diag_addr: ""
+
+auth_service:
+  enabled: "no"
+
+proxy_service:
+  enabled: "no"
+
+ssh_service:
+  enabled: "yes"
+  labels:
+    {% for key, value in teleport_labels.items() %}
+    {{ key }}: "{{ value }}"
+    {% endfor %}

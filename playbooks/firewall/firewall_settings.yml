@@ -1,0 +1,51 @@
+- name: Задать правила nftables
+  copy:
+    dest: /etc/nftables.conf
+    content: |
+      flush ruleset
+
+      table inet filter {
+        chain input {
+          type filter hook input priority 0;
+
+          # Разрешить loopback всегда
+          iif lo accept
+
+          # Разрешить уже установленные соединения
+          ct state established,related accept
+
+          # SSH только с этих адресов
+          tcp dport 11041 ip saddr {11.11.11.11} accept
+
+          # TCP 127.0.0.1 only
+          tcp dport 62789 ip saddr 127.0.0.1 accept
+          tcp dport 53   ip saddr 127.0.0.53 accept
+
+          # TCP по всем интерфейсам
+          tcp dport 65502 accept
+          tcp dport 3296  accept
+          tcp dport 443   accept
+          tcp dport 9229  accept
+          tcp dport 2222  accept
+          tcp dport 6379  accept
+          tcp dport 5140  accept
+          tcp dport 9443  accept
+          tcp dport 10050 accept
+          tcp dport 80 accept
+
+          # UDP 127.0.0.53 only
+          udp dport 53   ip saddr 127.0.0.53 accept
+
+          # Zabbix
+          icmp type { echo-request, echo-reply } limit rate 4/second accept
+
+          # Прочий трафик - запретить
+          reject
+        }
+      }
+
+- name: Включить nftables
+  systemd:
+    name: nftables
+    enabled: yes
+    state: restarted

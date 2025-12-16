@@ -1,0 +1,218 @@
+- name: Set Zabbix repo URL based on OS
+  set_fact:
+    zabbix_repo_url: >-
+      {% if ansible_facts['os_family'] == 'Debian' and ansible_facts['distribution'] | lower == 'ubuntu' %}
+        https://repo.zabbix.com/zabbix/7.0/ubuntu/pool/main/z/zabbix-release/zabbix-release_latest_7.0+ubuntu22.04_all.deb
+      {% elif ansible_facts['os_family'] == 'Debian' and ansible_facts['distribution'] | lower == 'debian' %}
+        https://repo.zabbix.com/zabbix/7.0/debian/pool/main/z/zabbix-release/zabbix-release_latest_7.0+debian12_all.deb
+      {% else %}
+        ""
+      {% endif %}
+
+- name: Fail if OS is not supported
+  fail:
+    msg: "This playbook supports only Debian and Ubuntu!"
+  when: zabbix_repo_url == ""
+
+- name: Show which OS and repo URL will be used
+  debug:
+    msg: "Detected OS: {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }} → Repo: {{ zabbix_repo_url }}"
+
+- name: Download Zabbix repository package
+  get_url:
+    url: "{{ zabbix_repo_url }}"
+    dest: /tmp/zabbix-release.deb
+    mode: "0644"
+  when: zabbix_repo_url != ""
+
+- name: Install Zabbix repository
+  apt:
+    deb: /tmp/zabbix-release.deb
+    state: present
+  when: zabbix_repo_url != ""
+
+- name: Update apt cache
+  apt:
+    update_cache: yes
+
+- name: Install Zabbix Agent 2
+  apt:
+    name: zabbix-agent2
+    state: present
+
+- name: Install Zabbix Agent 2 plugins
+  apt:
+    name: "{{ item }}"
+    state: present
+  loop: "{{ zabbix_agent_plugins }}"
+
+- name: Configure Zabbix Agent 2
+  template:
+    src: ./playbooks/zabbix-install/templates/zabbix_agent2.conf.j2
+    dest: /etc/zabbix/zabbix_agent2.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: config_changed
+
+- name: Restart Zabbix Agent 2 if config changed
+  systemd:
+    name: zabbix-agent2
+    state: restarted
+  when: config_changed.changed
+
+- name: Check if Docker is installed
+  command: which docker
+  register: docker_check
+  ignore_errors: yes
+
+- name: Set docker_installed fact
+  set_fact:
+    docker_installed: "{{ docker_check.rc == 0 }}"
+
+- name: Остановить Zabbix Agent
+  service:
+    name: zabbix-agent2
+    state: stopped
+
+- name: Добавить пользователя zabbix в группу docker
+  user:
+    name: zabbix
+    groups: docker
+    append: true
+  when: docker_installed
+
+- name: Enable and start Zabbix Agent 2
+  systemd:
+    name: zabbix-agent2
+    enabled: yes
+    state: started
+
+- name: Register host in Zabbix Server via API
+  delegate_to: localhost
+  run_once: true
+  block:
+    - name: Set Zabbix auth token
+      set_fact:
+        zabbix_auth_token: "{{ zabbix_api_token }}"
+
+- name: Check if host already exists in Zabbix
+  uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.get"
+      params:
+        filter:
+          host: "{{ server_name | default(inventory_hostname) }}"
+        output: ["hostid"]
+      auth: "{{ zabbix_auth_token }}"
+      id: 1
+    headers:
+      Content-Type: "application/json-rpc"
+  register: zabbix_host_check
+  ignore_errors: yes
+
+- name: Extract hostid if exists
+  set_fact:
+    zabbix_host_exists: "{{ (zabbix_host_check.json.result | default([])) | length > 0 }}"
+    zabbix_host_id: "{{ zabbix_host_check.json.result[0].hostid if (zabbix_host_check.json.result | default([])) | length > 0 else '' }}"
+
+- name: Get Group IDs
+  uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "hostgroup.get"
+      params:
+        filter:
+          name: "{{ item }}"
+        output: ["groupid"]
+      auth: "{{ zabbix_auth_token }}"
+      id: 1
+    headers:
+      Content-Type: "application/json-rpc"
+  loop: "{{ ['Linux servers'] + (['Docker servers'] if docker_installed else []) }}"
+  register: group_results
+
+- name: Set group IDs as variables
+  set_fact:
+    group_ids: "{{ group_results.results | map(attribute='json.result.0.groupid') | list }}"
+
+- name: Get Template IDs
+  uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "template.get"
+      params:
+        filter:
+          name: "{{ item }}"
+        output: ["templateid"]
+      auth: "{{ zabbix_auth_token }}"
+      id: 1
+    headers:
+      Content-Type: "application/json-rpc"
+  loop: >
+    {{ ['ICMP Ping', 'Linux by Zabbix agent'] +
+       (['Docker by Zabbix agent 2'] if docker_installed else []) }}
+  register: template_results
+
+- name: Set template IDs as variables
+  set_fact:
+    template_ids: "{{ template_results.results | map(attribute='json.result.0.templateid') | list }}"
+
+- name: Create host in Zabbix if not exists
+  when: not zabbix_host_exists
+  uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.create"
+      params:
+        host: "{{ server_name | default(inventory_hostname) }}"
+        interfaces:
+          - type: 1
+            main: 1
+            useip: 1
+            ip: "{{ ansible_host }}"
+            dns: ""
+            port: "10050"
+        groups: "{{ group_ids | map('community.general.dict_kv', 'groupid') | list }}"
+        templates: "{{ template_ids | map('community.general.dict_kv', 'templateid') | list }}"
+      auth: "{{ zabbix_auth_token }}"
+      id: 1
+    headers:
+      Content-Type: "application/json-rpc"
+  register: create_result
+
+- name: Update host if exists (attach groups and templates)
+  when: zabbix_host_exists
+  uri:
+    url: "{{ zabbix_api_url }}"
+    method: POST
+    body_format: json
+    body:
+      jsonrpc: "2.0"
+      method: "host.update"
+      params:
+        hostid: "{{ zabbix_host_id }}"
+        groups: "{{ group_ids | map('community.general.dict_kv', 'groupid') | list }}"
+        templates: "{{ template_ids | map('community.general.dict_kv', 'templateid') | list }}"
+      auth: "{{ zabbix_auth_token }}"
+      id: 1
+    headers:
+      Content-Type: "application/json-rpc"
+  register: update_result
+
+- name: Show result
+  debug:
+    msg: "Host {{ server_name | default(inventory_hostname) }} (FQDN: {{ server_domain | default(inventory_hostname) }}) registered in Zabbix successfully"

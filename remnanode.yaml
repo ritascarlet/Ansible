@@ -1,0 +1,74 @@
+---
+- name: Метаплейбук для установки и настройки ноды Remnawave
+  hosts: "{{ groups['servers'] | select('match', '.*') | list }}"
+  serial: 1
+  gather_facts: no
+  vars:
+    vpn_user: vpnuser
+    vpn_user_shell: /bin/bash
+    vpn_user_groups: ["sudo"]
+    vpn_user_sudo_nopasswd: true
+    fail2ban_max_retry: 3
+    fail2ban_ban_time: 120
+    fail2ban_ignore_ip: "{{ ansible_default_ipv4.address }}"
+    domains_to_process: "{{ target_domains }}"
+    ssh_port: 11041
+    ssh_root_login: false
+    ssh_password_auth: true
+    ssh_pubkey_auth: true
+    base_dir: "./playbooks/remnanode-selfsteal/"
+    working_dir: "/opt/caddy"
+    remnanode_dir: /opt/remnanode
+    docker_installed: "{{ hostvars[inventory_hostname].docker_installed | default(false) }}"
+    teleport_package_url: "https://cdn.teleport.dev/teleport_17.7.0_amd64.deb"
+    teleport_package_path: "/tmp/teleport-17.7.0.deb"
+    teleport_invite_token: "{{ teleport_invite_token | default('') }}"
+  pre_tasks:
+    - name: Собрать факты только для new серверов
+      setup:
+      when: hostvars[inventory_hostname].status == "new"
+
+  tasks:
+   - name: Выполнить prepare-system только для new
+      include_tasks: playbooks/prepare-system/prepare_system.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Выполнить user-create только для new
+      include_tasks: playbooks/user-create/create_user.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Установить fail2ban только для new
+      include_tasks: playbooks/fail2ban-install/install_fail2ban.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Создать remnanode только для new
+      include_tasks: playbooks/remnanode/create_remnanode_vds.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Добавить DNS только для new
+      include_tasks: playbooks/remnanode-dns/remnawave_dns_add.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Добавить selfsteal только для new
+      include_tasks: playbooks/remnanode-selfsteal/create_selfsteal.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Установить zabbix только для new
+      include_tasks: playbooks/zabbix-install/tasks/main.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Добавить teleport только для new
+      include_tasks: playbooks/teleport-install/teleport_install.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Установить graylog только для new
+      include_tasks: playbooks/graylog/graylog_install.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Установить firewall только для new
+      include_tasks: playbooks/firewall/firewall_settings.yml
+      when: hostvars[inventory_hostname].status == "new"
+
+    - name: Установить ssh только для new
+      include_tasks: playbooks/ssh-settings/configure_ssh.yml
+      when: hostvars[inventory_hostname].status == "new"
