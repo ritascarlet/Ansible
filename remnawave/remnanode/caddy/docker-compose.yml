@@ -1,0 +1,20 @@
+services:
+  caddy:
+    image: caddy:latest
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "9443:9443" # Основной порт для сайтов
+      - "80:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./data:/data # Для хранения SSL-сертификатов
+      - ./logs:/var/log/caddy # Логи
+      - /var/www/domain.com:/var/www/domain.com
+      - /var/www/domain.com:/var/www/domain.com
+    networks:
+      - caddy_net
+
+networks:
+  caddy_net:
+    driver: bridge

@@ -1,0 +1,150 @@
+---
+- name: ➕ Создать A-запись для субдомена
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+      - /etc/ansible/migration/inventory/porkbun.yml
+
+  tasks:
+      - name: 🔍 Получить все DNS-записи из Porkbun
+        uri:
+            url: "https://api.porkbun.com/api/json/v3/dns/retrieve/{{ porkbun_domain }}"
+            method: POST
+            body:
+                apikey: "{{ porkbun_api_key }}"
+                secretapikey: "{{ porkbun_secret_api_key }}"
+            body_format: json
+            return_content: yes
+        register: dns_response
+
+      - name: ❌ Прервать выполнение при ошибке API
+        fail:
+            msg: "Ошибка API Porkbun {{ dns_response.json.status }} — {{ dns_response.json.message | default('Unknown error') }}"
+        when: dns_response.json is defined and dns_response.json.status != "SUCCESS"
+
+      - name: 🧩 Извлечь и отсортировать A-записи
+        set_fact:
+            a_records: >-
+                {{
+                  dns_response.json.records
+                  | selectattr('type', 'equalto', 'A')
+                  | sort(attribute='name')
+                  | list
+                }}
+
+      - name: 📄 Вывести список всех A-записей
+        debug:
+            msg: |-
+                СПИСОК A-ЗАПИСЕЙ ДЛЯ {{ porkbun_domain }}
+
+                {% for record in a_records %}
+                {{ "%2d" % loop.index }}) {{ "%-30s" % record.name }} → {{ record.content }}
+                {% endfor %}
+        when: a_records | length > 0
+
+      - name: 🟡 Нет A-записей для домена
+        debug:
+            msg: |-
+                НЕТ A-ЗАПИСЕЙ для домена {{ porkbun_domain }}
+        when: a_records | length == 0
+
+      - name: 🧩 Запросить имя субдомена
+        pause:
+            prompt: "Введите имя субдомена (например, demo) для домена 2-го уровня {{ porkbun_domain }}"
+        register: subdomain_input
+
+      - name: 🧩 Запросить IP-адрес
+        pause:
+            prompt: "Введите IP-адрес (например, 1.1.1.1)"
+        register: target_ip_input
+
+      - name: 🧩 Сохранить введённые значения
+        set_fact:
+            subdomain: "{{ subdomain_input.user_input }}"
+            target_ip: "{{ target_ip_input.user_input }}"
+            full_subdomain: "{{ subdomain_input.user_input }}.{{ porkbun_domain }}"
+
+      - name: 📄 Вывести введенные значения
+        debug:
+            msg: |-
+                Домен  → {{full_subdomain}}
+                IP  → {{target_ip}}
+
+      - name: 🧩 Найти существующие A-записи для субдомена
+        set_fact:
+            existing_records_by_name: >-
+                {{
+                  (a_records | default([]))
+                  | selectattr('name', 'equalto', full_subdomain)
+                  | list
+                }}
+
+      - name: 🧩 Проверить совпадение IP
+        set_fact:
+            existing_record_with_same_ip: >-
+                {{
+                  existing_records_by_name
+                  | selectattr('content', 'equalto', target_ip)
+                  | list
+                }}
+
+      - name: 🟡 Запись уже существует и IP совпадает
+        debug:
+            msg: |-
+                Запись уже существует {{ full_subdomain }} → {{ target_ip }}
+                Создание не требуется
+        when: existing_record_with_same_ip | length > 0
+
+      - name: Предупреждение => запись существует с другими IP
+        debug:
+            msg: |-
+                ВНИМАНИЕ! Для {{ full_subdomain }} уже существуют A-записи
+
+                {% for record in existing_records_by_name %}
+                • {{ full_subdomain }} → {{  record.content }}
+                {% endfor %}
+
+                Вы собираетесь добавить ещё одну запись для домена full_subdomain с IP {{ target_ip }}
+
+                Это приведёт к множественным A-записям (round-robin DNS).
+                Убедитесь, что это задумано.
+
+                Продолжить? Введите yes для подтверждения.
+        when: >
+            existing_records_by_name | length > 0 and
+            existing_record_with_same_ip | length == 0
+
+      - name: 🛑 Подтвердите добавление записи
+        pause:
+            prompt: "Введите 'yes' для подтверждения добавления, или нажмите Ctrl+C для отмены"
+        when: >
+            existing_records_by_name | length > 0 and
+            existing_record_with_same_ip | length == 0
+        register: confirmation_pause
+
+      - name: 🚀 Создать A-запись
+        uri:
+            url: "https://api.porkbun.com/api/json/v3/dns/create/{{ porkbun_domain }}"
+            method: POST
+            body:
+                apikey: "{{ porkbun_api_key }}"
+                secretapikey: "{{ porkbun_secret_api_key }}"
+                name: "{{ subdomain }}"
+                type: A
+                content: "{{ target_ip }}"
+                ttl: "300"
+            body_format: json
+            status_code: 200
+        register: create_result
+        when: existing_record_with_same_ip | length == 0
+
+      - name: ✅ Отчёт о результате
+        debug:
+            msg: >-
+                {% if existing_record_with_same_ip | length > 0 %}
+                Запись {{ full_subdomain }} → {{ target_ip }} уже существует и актуальна
+                {% elif create_result is defined and create_result.status == 200 %}
+                Создана {{ full_subdomain }} → {{ target_ip }}
+                {% else %}
+                Ошибка не удалось создать запись
+                {% endif %}

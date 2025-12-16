@@ -1,0 +1,32 @@
+- name: Fetch sqlite DB from source servers
+  hosts: source_servers
+  gather_facts: false
+  tasks:
+
+    - name: Fetch sqlite database file
+      ansible.builtin.fetch:
+        src: "{{ db_path }}"
+        dest: "/tmp/x-ui_dbs/{{ inventory_hostname }}.db"
+        flat: yes
+
+- name: Distribute sqlite DBs to target servers
+  hosts: target_servers
+  gather_facts: false
+  tasks:
+    - name: Stop x-ui service on target server
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: stopped
+
+    - name: Copy appropriate db file to target server
+      ansible.builtin.copy:
+        src: "/tmp/x-ui_dbs/{{ groups['source_servers'][groups['target_servers'].index(inventory_hostname)] }}.db"
+        dest: "{{ dest_path }}"
+        owner: root
+        group: root
+        mode: '0640'
+
+    - name: Start x-ui service on target server
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        state: started

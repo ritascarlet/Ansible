@@ -1,0 +1,21 @@
+---
+all:
+  children:
+    old_servers:
+      hosts:
+        old-server-1:
+          ansible_host: 11.11.11.11
+          ansible_user: root
+          ansible_port: 11041
+          server_name: server-1
+          status: prepared
+          ansible_password: "{{ vault_ansible_password | default('CHANGE_ME') }}"
+          server_domain: "{{ vault_server_domain | default('CHANGE_ME') }}"
+          ansible_ssh_private_key_file: "{{ vault_ssh_private_key_file | default('/path/to/key') }}"
+          os_name: Ubuntu
+          host_provider: H2.nexus
+          location: old
+
+  hosts:
+    localhost:
+      ansible_connection: local

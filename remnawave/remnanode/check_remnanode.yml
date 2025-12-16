@@ -1,0 +1,16 @@
+- name: Создать новую ноду через RemnaWave API
+  hosts: localhost
+  gather_facts: no
+  tasks:
+    - name: Получить список всех нод (свежий список с учётом новой)
+      uri:
+        url: "{{ api_url }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ api_token }}"
+        return_content: yes
+      register: node_status_response
+
+    - name: Сохранить UUID новой ноды
+      set_fact:
+        new_node_uuid: "{{ node_status_response.json.response.uuid }}"

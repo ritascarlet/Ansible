@@ -1,0 +1,14 @@
+---
+- name: Установка 3x-ui
+  hosts: new_servers
+  serial: 1
+  become: yes
+  vars:
+      version: "v2.3.12"
+  tasks:
+      - name: Установить 3x-ui версии {{ version }}
+        shell: bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh) $VERSION
+        environment:
+            VERSION: "{{ version }}"
+        args:
+            executable: /bin/bash

@@ -1,0 +1,377 @@
+---
+- name: Backup servers
+  hosts: servers
+  gather_facts: yes
+  become: yes
+  serial: 1
+  vars:
+    tmp_backup_dir: "/tmp/backups_tmp"
+    git_repo_dir: "/tmp/backups_git_repo"
+    date_str: "{{ ansible_date_time.date | regex_replace('-', '') }}"
+    time_str: "{{ ansible_date_time.time | regex_replace(':', '') | regex_replace('\\..*', '') }}"
+  
+  tasks:
+    - name: Check if git is installed
+      command: which git
+      register: git_check
+      changed_when: false
+      failed_when: false
+      ignore_errors: yes
+
+    - name: Install git if missing
+      become: yes
+      package:
+        name: git
+        state: present
+      when: git_check.rc != 0
+      ignore_errors: yes
+
+    - name: Prepare Git repository URL with credentials
+      set_fact:
+        git_repo_url_with_auth: >-
+          {%- set clean_url = git_repo_url | regex_replace('^https?://', '') | regex_replace('^.*@', '') -%}
+          {%- if git_repo_url is match('^https://') -%}
+            https://{{ git_username }}:{{ git_password }}@{{ clean_url }}
+          {%- elif git_repo_url is match('^http://') -%}
+            http://{{ git_username }}:{{ git_password }}@{{ clean_url }}
+          {%- else -%}
+            https://{{ git_username }}:{{ git_password }}@{{ clean_url }}
+          {%- endif -%}
+      when: git_check.rc == 0 or git_check.rc is not defined
+
+    - name: Create temporary backup directory on remote server
+      become: yes
+      file:
+        path: "{{ tmp_backup_dir }}/{{ server_name }}"
+        state: directory
+        mode: "0755"
+      when: ansible_backup_files is defined and ansible_backup_files | length > 0
+      ignore_errors: yes
+
+    - name: Check if backup files exist
+      become: yes
+      stat:
+        path: "{{ item }}"
+      register: file_check
+      loop: "{{ ansible_backup_files }}"
+      when: ansible_backup_files is defined and ansible_backup_files | length > 0
+      ignore_errors: yes
+
+    - name: Determine file type and prepare paths
+      set_fact:
+        backup_items: "{{ backup_items | default([]) + [{
+          'path': item.item,
+          'is_file': item.stat.isreg | default(false),
+          'is_dir': item.stat.isdir | default(false),
+          'basename': item.item | basename,
+          'dest_path': tmp_backup_dir + '/' + server_name + '/' + (item.item | basename)
+        }] }}"
+      loop: "{{ file_check.results | default([]) }}"
+      when:
+        - ansible_backup_files is defined and ansible_backup_files | length > 0
+        - file_check.results is defined
+        - item.stat.exists | default(false)
+
+    - name: Copy files and directories to temporary directory
+      become: yes
+      copy:
+        src: "{{ item.path }}"
+        dest: "{{ item.dest_path }}"
+        remote_src: yes
+      loop: "{{ backup_items | default([]) }}"
+      when:
+        - backup_items is defined
+        - ansible_backup_files is defined and ansible_backup_files | length > 0
+      ignore_errors: yes
+
+    - name: Create ZIP archive on remote server
+      become: yes
+      archive:
+        path: "{{ tmp_backup_dir }}/{{ server_name }}"
+        dest: "{{ tmp_backup_dir }}/{{ server_name }}-{{ date_str }}-{{ server_name }}-{{ time_str }}.zip"
+        format: zip
+        remove: yes
+      when:
+        - ansible_backup_files is defined and ansible_backup_files | length > 0
+        - backup_items is defined
+      ignore_errors: yes
+      register: zip_result
+
+    - name: Check if Git repository directory exists
+      become: yes
+      stat:
+        path: "{{ git_repo_dir }}"
+      register: git_repo_dir_exists
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+      ignore_errors: yes
+
+    - name: Try to clone Git repository with server branch
+      become: yes
+      command: git clone -b {{ server_name }} {{ git_repo_url_with_auth }} {{ git_repo_dir }}
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - not (git_repo_dir_exists.stat.exists | default(false))
+      ignore_errors: yes
+      register: git_clone_with_branch_result
+
+    - name: Clone Git repository without branch (if branch doesn't exist)
+      become: yes
+      git:
+        repo: "{{ git_repo_url_with_auth }}"
+        dest: "{{ git_repo_dir }}"
+        accept_hostkey: yes
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - not (git_repo_dir_exists.stat.exists | default(false))
+        - git_clone_with_branch_result is defined
+        - git_clone_with_branch_result.rc != 0
+      ignore_errors: yes
+      register: git_clone_result
+
+    - name: Update Git repository
+      become: yes
+      git:
+        repo: "{{ git_repo_url_with_auth }}"
+        dest: "{{ git_repo_dir }}"
+        update: yes
+        accept_hostkey: yes
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_dir_exists.stat.exists | default(false)
+      ignore_errors: yes
+      register: git_update_result
+
+    - name: Configure git user
+      become: yes
+      git_config:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        scope: local
+        repo: "{{ git_repo_dir }}"
+      loop:
+        - { name: "user.name", value: "{{ git_user_name | default('Ansible Backup') }}" }
+        - { name: "user.email", value: "{{ git_user_email | default('backup@ansible.local') }}" }
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+      ignore_errors: yes
+      register: git_config_result
+
+    - name: Check if Git repository exists
+      become: yes
+      stat:
+        path: "{{ git_repo_dir }}/.git"
+      register: git_repo_exists
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+      ignore_errors: yes
+
+    - name: Check if branch exists locally
+      become: yes
+      command: git show-ref --verify --quiet refs/heads/{{ server_name }}
+      args:
+        chdir: "{{ git_repo_dir }}"
+      register: branch_exists_local
+      changed_when: false
+      failed_when: false
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+        - git_clone_with_branch_result.rc != 0 or git_clone_with_branch_result is not defined
+      ignore_errors: yes
+
+    - name: Check if branch exists remotely
+      become: yes
+      command: git ls-remote --heads origin {{ server_name }}
+      args:
+        chdir: "{{ git_repo_dir }}"
+      register: branch_exists_remote
+      changed_when: false
+      failed_when: false
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+        - git_clone_with_branch_result.rc != 0 or git_clone_with_branch_result is not defined
+      ignore_errors: yes
+
+    - name: Fetch remote branches
+      become: yes
+      command: git fetch origin
+      args:
+        chdir: "{{ git_repo_dir }}"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+        - git_clone_with_branch_result.rc != 0 or git_clone_with_branch_result is not defined
+        - branch_exists_remote is defined
+        - branch_exists_remote.stdout | length > 0
+      ignore_errors: yes
+
+    - name: Checkout existing remote branch
+      become: yes
+      command: git checkout -b {{ server_name }} origin/{{ server_name }}
+      args:
+        chdir: "{{ git_repo_dir }}"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+        - git_clone_with_branch_result.rc != 0 or git_clone_with_branch_result is not defined
+        - branch_exists_remote is defined
+        - branch_exists_remote.stdout | length > 0
+        - branch_exists_local is defined
+        - branch_exists_local.rc != 0
+      ignore_errors: yes
+
+    - name: Checkout existing local branch
+      become: yes
+      command: git checkout {{ server_name }}
+      args:
+        chdir: "{{ git_repo_dir }}"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+        - git_clone_with_branch_result.rc != 0 or git_clone_with_branch_result is not defined
+        - branch_exists_local is defined
+        - branch_exists_local.rc == 0
+      ignore_errors: yes
+
+    - name: Create new branch for server
+      become: yes
+      command: git checkout -b {{ server_name }}
+      args:
+        chdir: "{{ git_repo_dir }}"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+        - git_clone_with_branch_result.rc != 0 or git_clone_with_branch_result is not defined
+        - branch_exists_local is defined
+        - branch_exists_local.rc != 0
+        - branch_exists_remote is defined
+        - branch_exists_remote.stdout | length == 0
+      ignore_errors: yes
+
+    - name: Create server directory in repository
+      become: yes
+      file:
+        path: "{{ git_repo_dir }}/{{ server_name }}"
+        state: directory
+        mode: "0755"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+      ignore_errors: yes
+
+    - name: Copy ZIP archive to repository
+      become: yes
+      copy:
+        src: "{{ tmp_backup_dir }}/{{ server_name }}-{{ date_str }}-{{ server_name }}-{{ time_str }}.zip"
+        dest: "{{ git_repo_dir }}/{{ server_name }}/{{ server_name }}-{{ date_str }}-{{ server_name }}-{{ time_str }}.zip"
+        remote_src: yes
+        mode: "0644"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+      ignore_errors: yes
+
+    - name: Add files to Git
+      become: yes
+      command: git add {{ server_name }}/{{ server_name }}-{{ date_str }}-{{ server_name }}-{{ time_str }}.zip
+      args:
+        chdir: "{{ git_repo_dir }}"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+      ignore_errors: yes
+
+    - name: Commit changes
+      become: yes
+      command: git commit -m "Backup {{ server_name }} - {{ date_str }} {{ time_str }}"
+      args:
+        chdir: "{{ git_repo_dir }}"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+      ignore_errors: yes
+      register: git_commit_result
+
+    - name: Set remote URL with credentials for push
+      become: yes
+      command: git remote set-url origin {{ git_repo_url_with_auth }}
+      args:
+        chdir: "{{ git_repo_dir }}"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+        - git_commit_result.rc == 0
+      ignore_errors: yes
+
+    - name: Push to Git repository
+      become: yes
+      command: git push -u origin {{ server_name }}
+      args:
+        chdir: "{{ git_repo_dir }}"
+      environment:
+        GIT_TERMINAL_PROMPT: "0"
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+        - git_repo_exists.stat.exists | default(false)
+        - git_commit_result.rc == 0
+      ignore_errors: yes
+
+    - name: Cleanup ZIP archive on remote server
+      become: yes
+      file:
+        path: "{{ tmp_backup_dir }}/{{ server_name }}-{{ date_str }}-{{ server_name }}-{{ time_str }}.zip"
+        state: absent
+      when:
+        - zip_result is defined
+        - zip_result.changed | default(false)
+      ignore_errors: yes
+
+    - name: Cleanup Git repository on remote server
+      become: yes
+      file:
+        path: "{{ git_repo_dir }}"
+        state: absent
+      when:
+        - git_check.rc == 0 or git_check.rc is not defined
+        - zip_result is defined
+        - zip_result.changed | default(false)
+      ignore_errors: yes

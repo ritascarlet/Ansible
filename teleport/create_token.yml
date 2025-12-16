@@ -1,0 +1,18 @@
+- hosts: localhost
+  gather_facts: yes
+  become: yes
+  vars:
+    teleport_auth_host: "root@11.11.11.11 -p 22"
+
+  tasks:
+    - name: Получить Teleport invite token по SSH
+      shell: ssh {{ teleport_auth_host }} "sudo tctl tokens add --type=node"
+      register: teleport_token_result
+
+    - name: Извлечь сам invite token из вывода
+      set_fact:
+        teleport_invite_token: "{{ teleport_token_result.stdout | regex_search('token: ([a-zA-Z0-9]+)', '\\1') }}"
+
+    - name: Показать полученный invite token
+      debug:
+        var: teleport_invite_token

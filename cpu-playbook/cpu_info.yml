@@ -1,0 +1,26 @@
+---
+- hosts: servers
+  gather_facts: no
+  tasks:
+    - shell: cat /proc/cpuinfo | grep 'model name' | head -1
+      register: cpu_info
+      changed_when: false
+
+- hosts: localhost
+  gather_facts: no
+  tasks:
+    - copy:
+        content: |
+          {
+            "servers": [
+              {% for host in groups['all'] %}
+              {
+                "hostname": "{{ host }}",
+                "cpu_model": "{{ hostvars[host]['cpu_info']['stdout'] | default('N/A') }}"
+              }{% if not loop.last %},{% endif %}
+              {% endfor %}
+            ]
+          }
+        dest: "./cpu_info_results.json"
+        mode: '0644'
+

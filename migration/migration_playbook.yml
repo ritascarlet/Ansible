@@ -1,0 +1,138 @@
+---
+- hosts: old_servers
+  serial: 1
+  become: yes
+  vars:
+      temp_db_path: "/tmp/x-ui_migration_{{ inventory_hostname }}.db"
+      temp_ssh_path: "/tmp/auth_keys_migration_{{ inventory_hostname }}"
+  tasks:
+      - name: Копирование базы данных 3x-ui со старого сервера
+        ansible.builtin.fetch:
+            src: "/etc/x-ui/x-ui.db"
+            dest: "{{ temp_db_path }}"
+            flat: yes
+
+      - name: Копирование авторизированных ssh ключей со старого сервера
+        ansible.builtin.fetch:
+            src: "/home/vpnuser/.ssh/authorized_keys"
+            dest: "{{ temp_ssh_path }}"
+            flat: yes
+
+- hosts: new_servers
+  serial: 1
+  become: yes
+  vars:
+      # Найти старый сервер с совпадающим доменом
+      matching_old_server: >-
+          {%- for host in groups['old_servers'] -%}
+            {%- if hostvars[host].server_domain == server_domain -%}
+              {{- host -}}
+            {%- endif -%}
+          {%- endfor -%}
+
+      temp_db_path: "/tmp/x-ui_migration_{{ matching_old_server }}.db"
+      temp_ssh_path: "/tmp/auth_keys_migration_{{ matching_old_server }}"
+
+      vpn_user: vpnuser
+      vpn_user_shell: /bin/bash
+      vpn_user_groups: ["sudo"]
+      vpn_user_sudo_nopasswd: true
+
+  tasks:
+      - name: Генерировать случайный пароль для vpnuser
+        set_fact:
+            vpn_user_password: "{{ lookup('password', '/dev/null length=12 chars=ascii_letters,digits') }}"
+
+      - name: Создать пользователя vpnuser
+        user:
+            name: "{{ vpn_user }}"
+            shell: "{{ vpn_user_shell }}"
+            groups: "{{ vpn_user_groups }}"
+            state: present
+            createhome: no
+            home: /home/vpnuser
+            password: "{{ vpn_user_password }}"
+
+      - name: Создать директорию .ssh для vpnuser
+        file:
+            path: "/home/{{ vpn_user }}/.ssh"
+            state: directory
+            mode: "0700"
+            owner: "{{ vpn_user }}"
+            group: "{{ vpn_user }}"
+
+      - name: Добавить SSH ключ для vpnuser
+        authorized_key:
+            user: "{{ vpn_user }}"
+            key: "{{ lookup('file', '/etc/ansible/migration/ssh_keys/id_ed25519.pub') }}"
+            state: present
+
+      - name: Настроить sudo без пароля для vpnuser
+        lineinfile:
+            path: /etc/sudoers
+            line: "{{ vpn_user }} ALL=(ALL) NOPASSWD:ALL"
+            state: present
+            validate: "visudo -cf %s"
+        when: vpn_user_sudo_nopasswd
+
+      - name: Проверка сопоставления серверов
+        assert:
+            that:
+                - matching_old_server != ""
+            fail_msg: "Не найден старый сервер с доменом {{ server_domain }}"
+            success_msg: "Найден старый сервер {{ matching_old_server }} для домена {{ server_domain }}"
+
+      - name: Создание директории /etc/x-ui
+        ansible.builtin.file:
+            path: /etc/x-ui
+            state: directory
+            mode: "0755"
+            owner: root
+            group: root
+
+      - name: Копирование базы данных на новый сервер
+        ansible.builtin.copy:
+            src: "{{ temp_db_path }}"
+            dest: "/etc/x-ui/x-ui.db"
+            owner: root
+            group: root
+            mode: "0644"
+
+      - name: Создание директории /home/vpnuser/.ssh
+        ansible.builtin.file:
+            path: /home/vpnuser/.ssh
+            state: directory
+            mode: "0700"
+            owner: vpnuser
+            group: vpnuser
+
+      - name: Копирование authorized_keys на новый сервер
+        ansible.builtin.copy:
+            src: "{{ temp_ssh_path }}"
+            dest: "/home/vpnuser/.ssh/authorized_keys"
+            owner: vpnuser
+            group: vpnuser
+            mode: "0600"
+
+      - name: Удаление временного файла базы данных на localhost
+        ansible.builtin.file:
+            path: "{{ temp_db_path }}"
+            state: absent
+        delegate_to: localhost
+        run_once: true
+
+      - name: Удаление временного файла ssh на localhost
+        ansible.builtin.file:
+            path: "{{ temp_ssh_path }}"
+            state: absent
+        delegate_to: localhost
+        run_once: true
+
+- import_playbook: playbooks/01_prepare_system.yml
+- import_playbook: playbooks/02_install_3xui.yml
+- import_playbook: playbooks/03_create_user.yml
+- import_playbook: playbooks/05_install_fail2ban.yml
+- import_playbook: playbooks/06_xray_update.yml
+- import_playbook: playbooks/07_configure_3xui.yml
+- import_playbook: playbooks/08_install_monitoring.yml
+- import_playbook: playbooks/04_configure_ssh.yml

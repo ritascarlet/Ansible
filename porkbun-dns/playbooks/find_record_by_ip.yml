@@ -1,0 +1,79 @@
+# playbooks/find_record_by_ip.yml
+---
+- name: 🔍 Найти субдомен(ы) по IP-адресу
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - ../porkbun.yml
+
+  vars_prompt:
+    - name: target_ip
+      prompt: "Введите IP-адрес для поиска"
+      private: no
+
+  tasks:
+    - name: 🔍 Получить все DNS-записи из Porkbun
+      uri:
+        url: "https://api.porkbun.com/api/json/v3/dns/retrieve/{{ porkbun_domain }}"
+        method: POST
+        body:
+          apikey: "{{ porkbun_api_key }}"
+          secretapikey: "{{ porkbun_secret_api_key }}"
+        body_format: json
+        return_content: yes
+      register: dns_response
+
+    - name: ⚠️ ПроверкаAPI вернул ошибку
+      fail:
+        msg: "❌ Ошибка API Porkbun {{ dns_response.json.status }} — {{ dns_response.json.message | default('Unknown error') }}"
+      when: dns_response.json is defined and dns_response.json.status != "SUCCESS"
+
+    - name: 🧩 Найти уникальные имена A-записей с IP {{ target_ip }}
+      set_fact:
+        target_names: >-
+          {{
+            dns_response.json.records
+            | selectattr('type', 'equalto', 'A')
+            | selectattr('content', 'equalto', target_ip | trim)
+            | map(attribute='name')
+            | unique
+            | sort
+            | list
+          }}
+
+    - name: 📄 Вывести найденные субдомены
+      debug:
+        msg: |-
+          ПОИСК ПО IP {{ target_ip }}
+          Найдено {{ target_names | length }} субдомен(ов)
+          {% for name in target_names %}
+          {{ "%2d" % (loop.index) }}) {{ name }}
+          {% endfor %}
+      when: target_names | length > 0
+
+    - name: 🟡 Субдомены с IP {{ target_ip }} не найдены
+      debug:
+        msg: |-
+          НЕТ A-ЗАПИСЕЙ с IP {{ target_ip }}
+      when: target_names | length == 0
+
+    - name: 🔎 Показать ВСЕ DNS-записи для найденных субдоменов
+      debug:
+        msg: |-
+          ВСЕ ЗАПИСИ ДЛЯ {{ item }}
+
+          {% set all_records_for_name = dns_response.json.records
+            | selectattr('name', 'equalto', item)
+            | sort(attribute='type')
+            | list %}
+          {% if all_records_for_name | length > 0 %}
+          {% for r in all_records_for_name %}
+          • {{ "%-8s" % r.type }} → {{ r.content }} (TTL {{ r.ttl }})
+          {% endfor %}
+          {% else %}
+          • Нет DNS-записей
+          {% endif %}
+      loop: "{{ target_names }}"
+      when: target_names | length > 0
+      loop_control:
+        label: "🔍 {{ item }}"

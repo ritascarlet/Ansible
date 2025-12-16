@@ -1,0 +1,11 @@
+---
+all:
+  children:
+    servers:
+      hosts:
+        server-2:
+          ansible_host: 11.11.11.11
+          ansible_user: root
+          ansible_port: 22
+          server_domain: "{{ vault_server_domain | default('CHANGE_ME') }}"
+          server_name: "server-2"

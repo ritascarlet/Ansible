@@ -1,0 +1,79 @@
+---
+- hosts: old_servers
+  become: yes
+  serial: 1
+  vars:
+      temp_db_path: "/tmp/x-ui_migration_{{ inventory_hostname }}.db"
+  tasks:
+      - name: Копирование базы данных 3x-ui со старого сервера
+        ansible.builtin.fetch:
+            src: "/etc/x-ui/x-ui.db"
+            dest: "{{ temp_db_path }}"
+            flat: yes
+
+- hosts: actual_servers
+  become: yes
+  serial: 1
+  vars:
+      # Найти старый сервер с совпадающим доменом
+      matching_old_server: >-
+          {%- for host in groups['old_servers'] -%}
+            {%- if hostvars[host].server_domain == server_domain -%}
+              {{- host -}}
+            {%- endif -%}
+          {%- endfor -%}
+
+      temp_db_path: "/tmp/x-ui_migration_{{ matching_old_server }}.db"
+      certbot_domain: "{{ server_domain }}"
+
+  tasks:
+      - name: Проверка сопоставления серверов
+        assert:
+            that:
+                - matching_old_server != ""
+            fail_msg: "Не найден старый сервер с доменом {{ server_domain }}"
+            success_msg: "Найден старый сервер {{ matching_old_server }} для домена {{ server_domain }}"
+
+      - name: Копирование базы данных на новый сервер
+        ansible.builtin.copy:
+            src: "{{ temp_db_path }}"
+            dest: "/etc/x-ui/x-ui.db"
+            owner: root
+            group: root
+            mode: "0644"
+
+      - name: Удаление временного файла базы данных на localhost
+        ansible.builtin.file:
+            path: "{{ temp_db_path }}"
+            state: absent
+        delegate_to: localhost
+        run_once: true
+
+      - name: Остановить сервисы, которые могут использовать порт 80
+        systemd:
+            name: "{{ item }}"
+            state: stopped
+        loop:
+            - nginx
+            - apache2
+            - caddy
+        ignore_errors: yes
+
+      - name: Получить SSL сертификат через Certbot standalone
+        command: sudo certbot certonly --standalone --agree-tos --register-unsafely-without-email -d {{ certbot_domain }}
+        args:
+            creates: /etc/letsencrypt/live/{{ certbot_domain }}/fullchain.pem
+
+      - name: Перезагрузить службу 3x-ui
+        systemd:
+            name: x-ui
+            state: restarted
+            enabled: yes
+
+      - name: Перезагрузить службу 3x-ui
+        systemd:
+            name: fail2ban
+            state: restarted
+            enabled: yes
+
+- import_playbook: playbooks/04_configure_ssh.yml

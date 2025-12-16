@@ -1,0 +1,41 @@
+- name: Полное удаление Teleport с ноды
+  hosts: all
+  become: yes
+  tasks:
+    - name: Остановить сервис teleport
+      systemd:
+        name: teleport
+        state: stopped
+        enabled: no
+      ignore_errors: yes
+
+    - name: Удалить binary teleport
+      file:
+        path: /usr/bin/teleport
+        state: absent
+
+    - name: Удалить бинарник tctl (если есть)
+      file:
+        path: /usr/bin/tctl
+        state: absent
+
+    - name: Удалить системный unit-файл teleport
+      file:
+        path: /etc/systemd/system/teleport.service
+        state: absent
+
+    - name: Удалить директорию с конфигами
+      file:
+        path: /etc/teleport
+        state: absent
+
+    - name: Удалить рабочие и временные директории (если использовались)
+      file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/lib/teleport
+        - /var/log/teleport
+
+    - name: Перечитать конфигурацию systemd
+      command: systemctl daemon-reload

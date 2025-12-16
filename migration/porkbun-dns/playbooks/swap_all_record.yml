@@ -1,0 +1,35 @@
+- name: Массовое обновление доменов (3-го уровня) через Porkbun API
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  vars_files:
+      - /etc/ansible/migration/inventory/porkbun.yml
+
+  tasks:
+    - name: Получить списки старых и новых серверов
+      set_fact:
+        old_hosts: "{{ groups['old_servers'] }}"
+        new_hosts: "{{ groups['new_servers'] }}"
+
+    - name: Сформировать список доменов для обновления
+      set_fact:
+        domains: "{{ domains | default([]) + [ {
+          'subdomain': (hostvars[item].server_domain.split('.')[0]) | default(''),
+          'old_ip': hostvars[item].ansible_host,
+          'new_ip': hostvars[new_hosts[old_hosts.index(item)]].ansible_host
+        } ] }}"
+      loop: "{{ old_hosts }}"
+
+    - name: Вывести сформированные домены (для проверки)
+      debug:
+        var: domains
+
+    - name: Обновить DNS записи для каждого домена
+      include_tasks: update_domain.yml
+      loop: "{{ domains }}"
+      loop_control:
+        loop_var: domain
+      vars:
+        subdomain: "{{ domain.subdomain }}"
+        old_ip: "{{ domain.old_ip }}"
+        new_ip: "{{ domain.new_ip }}"

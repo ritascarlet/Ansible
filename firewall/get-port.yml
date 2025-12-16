@@ -1,0 +1,21 @@
+- name: Установка netstat и сбор открытых портов
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  tasks:
+    - name: Установить net-tools (для netstat) на Debian/Ubuntu
+      apt:
+        name: net-tools
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Получить открытые порты через netstat
+      shell: netstat -tulpn
+      register: netstat_output
+
+    - name: Сохранить вывод netstat в файл (локально)
+      local_action:
+        module: copy
+        content: "{{ inventory_hostname }}\n{{ netstat_output.stdout }}"
+        dest: "./netstat_{{ inventory_hostname }}.txt"

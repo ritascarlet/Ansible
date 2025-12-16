@@ -1,0 +1,38 @@
+---
+- name: Установка и настройка Fail2ban
+  hosts: new_servers
+  serial: 1
+  become: yes
+  vars:
+      fail2ban_max_retry: 3
+      fail2ban_ban_time: 120
+      fail2ban_ignore_ip: "{{ ansible_default_ipv4.address }}"
+  tasks:
+      - name: Создать конфигурацию jail.local
+        copy:
+            dest: /etc/fail2ban/jail.local
+            content: |
+                [DEFAULT]
+                bantime = {{ fail2ban_ban_time }}
+                findtime = 600
+                maxretry = {{ fail2ban_max_retry }}
+                ignoreip = {{ fail2ban_ignore_ip }}
+
+                [sshd]
+                enabled = true
+                port = ssh
+                logpath = /var/log/auth.log
+                maxretry = {{ fail2ban_max_retry }}
+
+                [x-ui]
+                enabled = true
+                port = http,https
+                logpath = /var/log/x-ui/access.log
+                maxretry = 3
+            mode: "0644"
+
+      - name: Перезапустить Fail2ban
+        systemd:
+            name: fail2ban
+            state: restarted
+            enabled: yes

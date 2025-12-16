@@ -1,0 +1,95 @@
+- name: Установка node-exporter
+  hosts: all
+  become: true
+
+  vars:
+    node_exporter_version: "1.6.1"
+    node_exporter_user: "node_exporter"
+    node_exporter_group: "node_exporter"
+    node_exporter_bin_path: "/usr/local/bin/node_exporter"
+
+  tasks:
+    - name: Создать пользователя для node_exporter
+      ansible.builtin.user:
+        name: "{{ node_exporter_user }}"
+        system: yes
+        shell: /usr/sbin/nologin
+
+    - name: Скачать node-exporter бинарник
+      ansible.builtin.get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+        dest: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+        mode: '0644'
+
+    - name: Распаковать архив
+      ansible.builtin.unarchive:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+        dest: /tmp/
+        remote_src: yes
+
+    - name: Скопировать бинарник node-exporter
+      ansible.builtin.copy:
+        src: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
+        dest: "{{ node_exporter_bin_path }}"
+        mode: '0755'
+        remote_src: yes
+
+    - name: Удалить временные файлы
+      ansible.builtin.file:
+        path: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64"
+        state: absent
+
+    - name: Удалить архив
+      ansible.builtin.file:
+        path: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+        state: absent
+
+    - name: Создать systemd сервис для node-exporter
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/node_exporter.service
+        content: |
+          [Unit]
+          Description=Node Exporter
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          User={{ node_exporter_user }}
+          Group={{ node_exporter_group }}
+          Type=simple
+          ExecStart={{ node_exporter_bin_path }}
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Перезагрузить systemd и запустить node-exporter
+      ansible.builtin.systemd:
+        daemon_reload: yes
+        name: node_exporter
+    
+    - name: Запустить и включить сервис nodeexporter
+      systemd:
+        name: node_exporter
+        enabled: yes
+        state: started
+
+    - name: Установить sqlite3, unzip, figlet
+      apt:
+        name:
+          - sqlite3
+          - unzip
+          - figlet
+        state: present
+
+    - name: Изменить порт в конфигурации sshd
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?Port\s+'
+        line: 'Port 11041'
+        state: present
+
+    - name: Перезапустить SSH сервис
+      service:
+        name: ssh
+        state: restarted

@@ -1,0 +1,69 @@
+# SSH Keys
+**/ssh_keys/**/*.pem
+**/ssh_keys/**/id_*
+**/ssh_keys/**/id_*.pub
+**/ssh_keys/**/server-*
+**/ssh_keys/**/*_rsa*
+**/ssh_keys/**/*_ed25519*
+**/ssh_keys/**/*_ecdsa*
+**/ssh_keys/**/*_dsa*
+
+# Private keys
+*.pem
+*.key
+*.pem.save
+*_private_key*
+*_pubkey.pem*
+
+# Passwords
+**/password/**/*.txt
+**/passwords/**/*.txt
+**/*password*.txt
+**/*passwd*.txt
+
+# Environment files
+.env
+.env.*
+*.env
+*.env.local
+*.env.*.local
+
+# Secrets and credentials
+**/secrets/**
+**/credentials/**
+**/*secret*
+**/*credential*
+**/*token*.txt
+**/*api_key*.txt
+
+# Ansible Vault files (if you use them)
+*.vault
+vault.yml
+vault.yaml
+group_vars/*/vault.yml
+group_vars/*/vault.yaml
+
+# Backup files
+*.save
+*.save.*
+*.bak
+*.backup
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+

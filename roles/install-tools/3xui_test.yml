@@ -1,0 +1,131 @@
+- name: Установка 3x-ui
+  hosts: all
+  become: yes
+  vars:
+    backend_ip: "{{ ansible_default_ipv4.address }}"
+  tasks:
+
+    - name: Запуск скрипта установки 3x-ui через pipe curl | bash
+      shell: curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh | bash    
+    
+    - name: Перезапускаем 3x-ui
+      systemd:
+        name: x-ui
+        state: restarted
+
+
+    - name: Получить настройки 3x-ui
+      ansible.builtin.command: x-ui settings
+      register: xui_settings
+
+    - name: Извлечь порт и webBasePath из вывода
+      set_fact:
+        backend_port: "{{ xui_settings.stdout_lines | select('search', '^port:') | map('regex_replace', '^port: (\\d+)$', '\\1') | first }}"
+        web_base_path: "{{ xui_settings.stdout_lines | select('search', '^webBasePath:') | map('regex_replace', '^webBasePath: /([^ ]+)/.*$', '\\1') | first }}"
+
+   
+    - name: Проверка значений переменных
+      ansible.builtin.debug:
+        msg:
+          - "backend_port={{ backend_port }}"
+          - "web_base_path={{ web_base_path }}"
+
+
+    
+    - name: Удалить /etc/apt/keyrings/docker.gpg
+      file:
+        path: /etc/apt/keyrings/docker.gpg
+        state: absent
+
+    - name: Удалить /etc/apt/sources.list.d/docker.list
+      file:
+        path: /etc/apt/sources.list.d/docker.list
+        state: absent
+
+    - name: Обновить список пакетов apt
+      apt:
+        update_cache: yes
+
+    - name: Установить пакеты для использования репозиториев через HTTPS
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+        update_cache: yes
+
+    - name: Add Docker GPG key
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        keyring: /usr/share/keyrings/docker-archive-keyring.gpg
+        state: present
+
+    - name: Add Docker apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu jammy stable"
+        state: present
+        filename: docker.list
+
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: yes
+    
+    - name: Установка docker-ce и docker-ce-cli
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: latest
+
+    - name: Установка Docker Compose
+      apt:
+        name: docker-compose-plugin
+        state: present
+
+    - name: Создать директорию для caddy
+      file:
+        path: /opt/caddy
+        state: directory
+
+    - name: Создать docker-compose.yml с конфигурацией Caddy
+      copy:
+        dest: /opt/caddy/docker-compose.yml
+        content: |
+          services:
+            caddy:
+              image: caddy:latest
+              ports:
+                - "80:80"
+                - "443:443"
+              volumes:
+                - ./Caddyfile:/etc/caddy/Caddyfile:ro
+                - caddy_data:/data
+                - caddy_config:/config
+              restart: unless-stopped
+
+          volumes:
+            caddy_data:
+            caddy_config:
+
+        mode: '0644'
+    
+    - name: Создать Caddyfile с конфигурацией сайта
+      copy:
+        dest: /opt/caddy/Caddyfile
+        content: |
+          pbradr.info {
+              reverse_proxy {{backend_ip}}:{{backend_port}}
+          }
+    
+    - name: Запустить Caddy через Docker Compose
+      command: docker compose up -d
+      args:
+        chdir: /opt/caddy
+
+    - name: Вывести URL подключения к бекенду
+      debug:
+        msg: "URL сервиса: https://pbradr.info/{{ web_base_path }}"

@@ -1,0 +1,20 @@
+teleport:
+  nodename: {{ teleport_nodename | default(inventory_hostname) }}
+  data_dir: /var/lib/teleport
+  log:
+    output: stderr
+    severity: INFO
+
+auth_service:
+  enabled: no
+
+ssh_service:
+  enabled: yes
+  labels:
+    {% for key, value in teleport_labels.items() %}
+    {{ key }}: "{{ value }}"
+    {% endfor %}
+
+
+proxy_service:
+  enabled: no

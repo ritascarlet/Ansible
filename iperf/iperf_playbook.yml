@@ -1,0 +1,66 @@
+- name: Установить iperf3 на сервере и клиентах
+  hosts: iperf_servers:iperf_clients
+  become: yes
+  tasks:
+    - name: Install iperf3
+      apt:
+        name: iperf3
+        state: present
+      when: ansible_os_family == "Debian"
+
+- name: Запуск iperf сервера на Ansible-сервере
+  hosts: iperf_servers
+  connection: local
+  become: yes
+  tasks:
+    - name: Запустить iperf3 сервер в фоне
+      shell: "nohup iperf3 -s > /tmp/iperf_server.log 2>&1 &"
+
+- name: Тестирование производительности с клиентов
+  hosts: iperf_clients
+  become: yes
+  serial: 1
+  vars:
+    iperf_server_ip: "{{ hostvars['localhost']['ansible_host'] | default('206.189.58.13') }}"
+    iperf_parallel_streams: 4
+  tasks:
+    - name: Запуск iperf3 теста (upload, 4 потока) и вывод в файл
+      shell: "iperf3 -c {{ iperf_server_ip }} -P {{ iperf_parallel_streams }} -J > /tmp/iperf_result_upload_{{ inventory_hostname }}.json"
+      args:
+        executable: /bin/bash
+
+    - name: Запуск iperf3 теста (download, 4 потока) и вывод в файл
+      shell: "iperf3 -c {{ iperf_server_ip }} -P {{ iperf_parallel_streams }} -J --reverse > /tmp/iperf_result_download_{{ inventory_hostname }}.json"
+      args:
+        executable: /bin/bash
+
+    - name: Создать папку для результатов на ansible-сервере
+      file:
+        path: "/iperf_results/{{ inventory_hostname }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: false
+
+    - name: Забрать результат upload на ansible-сервер
+      fetch:
+        src: /tmp/iperf_result_upload_{{ inventory_hostname }}.json
+        dest: /etc/ansible/iperf/iperf_results/{{ inventory_hostname }}/
+        flat: yes
+
+    - name: Забрать результат download на ansible-сервер
+      fetch:
+        src: /tmp/iperf_result_download_{{ inventory_hostname }}.json
+        dest: /etc/ansible/iperf/iperf_results/{{ inventory_hostname }}/
+        flat: yes
+
+    - name: Отправить результаты в Zabbix
+      shell: |
+        UPLOAD_FILE="/etc/ansible/iperf/iperf_results/{{ inventory_hostname }}/iperf_result_upload_{{ inventory_hostname }}.json"
+        DOWNLOAD_FILE="/etc/ansible/iperf/iperf_results/{{ inventory_hostname }}/iperf_result_download_{{ inventory_hostname }}.json"
+        SPEED_UPLOAD=$(jq '.end.sum_sent.bits_per_second' "$UPLOAD_FILE")
+        SPEED_DOWNLOAD=$(jq '.end.sum_received.bits_per_second' "$DOWNLOAD_FILE")
+        /usr/bin/zabbix_sender -z 11.11.11.11 -s "{{ inventory_hostname }}" -k iperf.speed.upload -o "$SPEED_UPLOAD"
+        /usr/bin/zabbix_sender -z 11.11.11.11 -s "{{ inventory_hostname }}" -k iperf.speed.download -o "$SPEED_DOWNLOAD"
+      delegate_to: localhost
+      ignore_errors: yes

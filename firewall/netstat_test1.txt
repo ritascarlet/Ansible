@@ -1,0 +1,22 @@
+test1
+Active Internet connections (only servers)
+Proto Recv-Q Send-Q Local Address           Foreign Address         State       PID/Program name    
+tcp        0      0 127.0.0.1:41097         0.0.0.0:*               LISTEN      427974/containerd   
+tcp        0      0 0.0.0.0:11041           0.0.0.0:*               LISTEN      425021/sshd: /usr/s 
+tcp        0      0 127.0.0.1:62789         0.0.0.0:*               LISTEN      487625/bin/xray-lin 
+tcp        0      0 127.0.0.53:53           0.0.0.0:*               LISTEN      21628/systemd-resol 
+tcp6       0      0 :::65502                :::*                    LISTEN      487482/x-ui         
+tcp6       0      0 :::11041                :::*                    LISTEN      425021/sshd: /usr/s 
+tcp6       0      0 :::3296                 :::*                    LISTEN      487482/x-ui         
+tcp6       0      0 :::443                  :::*                    LISTEN      487625/bin/xray-lin 
+tcp6       0      0 :::10050                :::*                    LISTEN      427278/zabbix_agent 
+tcp6       0      0 :::9229                 :::*                    LISTEN      102742/node_exporte 
+udp        0      0 127.0.0.53:53           0.0.0.0:*                           21628/systemd-resol 
+udp6       0      0 :::46539                :::*                                487625/bin/xray-lin 
+udp6       0      0 :::38462                :::*                                487625/bin/xray-lin 
+udp6       0      0 :::39215                :::*                                487625/bin/xray-lin 
+udp6       0      0 :::39458                :::*                                487625/bin/xray-lin 
+udp6       0      0 :::47744                :::*                                487625/bin/xray-lin 
+udp6       0      0 :::56298                :::*                                487625/bin/xray-lin 
+udp6       0      0 :::32925                :::*                                487625/bin/xray-lin 
+udp6       0      0 :::33130                :::*                                487625/bin/xray-lin 

@@ -1,0 +1,164 @@
+---
+- name: 🔁 Заменить IP A-записи (удалить старую → создать новую)
+  hosts: localhost
+  gather_facts: no
+
+  tasks:
+    # --- ШАГ 1: Получаем все записи ---
+    - name: 🔍 Получить все DNS-записи из Porkbun
+      uri:
+        url: "https://api.porkbun.com/api/json/v3/dns/retrieve/{{ porkbun_domain }}"
+        method: POST
+        body:
+          apikey: "{{ porkbun_api_key }}"
+          secretapikey: "{{ porkbun_secret_api_key }}"
+        body_format: json
+        return_content: yes
+      register: dns_response
+
+    - name: ⚠️ Проверка:API вернул ошибку
+      fail:
+        msg: "❌ Ошибка API {{ dns_response.json.status }} — {{ dns_response.json.message | default('Unknown error') }}"
+      when: dns_response.json is defined and dns_response.json.status != "SUCCESS"
+
+    - name: 🧩 Извлечь и отсортировать A-записи
+      set_fact:
+        a_records: >-
+          {{
+            dns_response.json.records
+            | selectattr('type', 'equalto', 'A')
+            | sort(attribute='name')
+            | list
+          }}
+
+    - name: 📄 Вывести список всех A-записей
+      debug:
+        msg: |-
+          СПИСОК A-ЗАПИСЕЙ ДЛЯ {{ porkbun_domain }}
+
+          {% for record in a_records %}
+          {{ "%2d" % loop.index }}) {{ "%-30s" % record.name }} → {{ record.content }}
+          {% endfor %}
+      when: a_records | length > 0
+
+    - name: 🟡 Нет A-записей для домена
+      debug:
+        msg: |-
+           НЕТ A-ЗАПИСЕЙ для домена {{ porkbun_domain }}
+      when: a_records | length == 0
+
+    - name: 🧩 Запросить имя субдомена
+      pause:
+        prompt: "Введите имя субдомена (например, demo) для домена 2-го уровня {{ porkbun_domain }}"
+      register: subdomain_input
+
+    - name: 🧩 Запросить IP-адрес для удаления
+      pause:
+        prompt: "Введите IP-адрес для удаления (например, 1.1.1.1)"
+      register: old_ip_input
+
+    - name: 🧩 Запросить IP-адрес для новой записи
+      pause:
+        prompt: "Введите IP-адрес для новой записи (например, 1.1.1.1)"
+      register: new_ip_input
+
+    - name: 🧩 Сохранить введённые значения
+      set_fact:
+        subdomain: "{{ subdomain_input.user_input }}"
+        old_ip: "{{ old_ip_input.user_input }}"
+        new_ip: "{{ new_ip_input.user_input }}"
+
+    - name:  📄 Вывести введенные значения
+      debug:
+        msg: |-
+           Домен  → {{subdomain}}.{{porkbun_domain}}
+           Старый IP  → {{old_ip}}
+           Новый IP  → {{new_ip}}
+
+    # --- ШАГ 2: Поиск старой записи (для удаления) ---
+    - name: 🧩 Найти A-запись {{ subdomain }} → {{ old_ip }}
+      set_fact:
+        record_to_delete: "{{ item }}"
+      loop: "{{ dns_response.json.records }}"
+      when: >
+        item.type == 'A' and
+        item.name == (subdomain + '.' + porkbun_domain) and
+        item.content == old_ip | trim
+
+    - name: Предупреждение => проверьте введенные данные
+      debug:
+        msg: |-
+          ДОМЕН  → {{ subdomain }}.{{ porkbun_domain }}
+
+          СТАРЫЙ IP  → {{ old_ip }}
+
+          НОВЫЙ IP  → {{ new_ip }}
+
+          Проверьте введенные данные!!!!!!!!!
+
+    - name: 🛑 Подтвердите подмену записи
+      pause:
+        prompt: "Введите 'yes' для подтверждения подмены, или нажмите Ctrl+C для отмены"
+      register: confirmation_pause
+
+    # --- ШАГ 3: Удаление старой записи ---
+    - name: 🗑️ Удалить старую A-запись {{ subdomain }} → {{ old_ip }}
+      uri:
+        url: "https://api.porkbun.com/api/json/v3/dns/delete/{{ porkbun_domain }}/{{ record_to_delete.id }}"
+        method: POST
+        body:
+          apikey: "{{ porkbun_api_key }}"
+          secretapikey: "{{ porkbun_secret_api_key }}"
+        body_format: json
+        status_code: 200
+      register: delete_result
+      when: record_to_delete is defined
+
+    - name: ✅ Успешно удалена старая запись
+      debug:
+        msg: "✅ Удалено: {{ subdomain }}.{{ porkbun_domain }} → {{ old_ip }}"
+      when: record_to_delete is defined and delete_result is succeeded
+
+
+    - name: ❌ Не найдена запись для удаления
+      debug:
+        msg: "🟡 Не найдена A-запись {{ subdomain }}.{{ porkbun_domain }} → {{ old_ip }}"
+      when: record_to_delete is not defined
+
+    - name: ❌ Ошибка при удалении
+      debug:
+        msg: "❌ Ошибка удаления {{ delete_result.status }} {{ delete_result.status_text }}"
+      when: record_to_delete is defined and delete_result is failed
+
+    # --- ШАГ 4: Создание новой записи ---
+    - name: 🚀 Создать новую A-запись {{ subdomain }} → {{ new_ip }}
+      uri:
+        url: "https://api.porkbun.com/api/json/v3/dns/create/{{ porkbun_domain }}"
+        method: POST
+        body:
+          apikey: "{{ porkbun_api_key }}"
+          secretapikey: "{{ porkbun_secret_api_key }}"
+          name: "{{ subdomain }}"
+          type: "A"
+          content: "{{ new_ip }}"
+          ttl: "300"
+        body_format: json
+        status_code: 200
+      register: create_result
+      # Создаём всегда, даже если старая запись не была найдена — может, она уже удалена
+      # Если запись с таким именем уже существует с новым IP — API вернёт ошибку
+
+    - name: ✅ Успешно создана новая запись
+      debug:
+        msg: "✅ Создано: {{ subdomain }}.{{ porkbun_domain }} → {{ new_ip }}"
+      when: create_result is succeeded
+
+    - name: ❌ Ошибка при создании
+      debug:
+        msg: |-
+          ❌ Ошибка создания {{ create_result.json.message | default('HTTP ' + create_result.status|string) }}
+          Возможные причины
+          • Уже существует A-запись с таким именем
+          • Ошибка авторизации
+          • Некорректный IP
+      when: create_result is failed

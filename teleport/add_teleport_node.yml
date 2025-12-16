@@ -1,0 +1,94 @@
+- hosts: servers
+  become: true
+  vars:
+    teleport_auth_host: "root@11.11.11.11 -p 22"
+    teleport_package_url: "https://cdn.teleport.dev/teleport_17.7.0_amd64.deb"
+    teleport_package_path: "/tmp/teleport-17.7.0.deb"
+
+  tasks:
+    - name: Получить Teleport invite token по SSH
+      shell: ssh {{ teleport_auth_host }} "sudo tctl tokens add --type=node"
+      register: teleport_token_result
+
+    - name: Извлечь сам invite token из вывода
+      set_fact:
+        teleport_invite_token: "{{ teleport_token_result.stdout | regex_search('token: ([a-zA-Z0-9]+)', '\\1') }}"
+
+    - name: Показать полученный invite token
+      debug:
+        var: teleport_invite_token
+    - name: Проверить, что OS семейства Debian/Ubuntu
+      assert:
+        that: ansible_facts['os_family'] == 'Debian'
+        fail_msg: "Установка только для Debian/Ubuntu!"
+
+    - name: Скачать Teleport DEB
+      get_url:
+        url: "{{ teleport_package_url }}"
+        dest: "{{ teleport_package_path }}"
+        mode: "0644"
+
+    - name: Установить Teleport
+      apt:
+        deb: "{{ teleport_package_path }}"
+        state: present
+
+    - name: Развернуть teleport.yaml из текста
+      copy:
+        dest: /etc/teleport.yaml
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          version: v3
+
+          teleport:
+            # Название узла (уникальное для каждой машины)
+            nodename: "{{ inventory_hostname }}"   # или просто подставь вручную, напр. "server-1"
+
+            # Путь к данным Teleport
+            data_dir: /var/lib/teleport
+
+            # Параметры подключения к кластеру
+            join_params:
+              method: token
+              token_name: "{{ teleport_invite_token }}"    # сюда вставляется токен регистрации
+
+            # Адрес прокси-сервера Teleport (у тебя он общий для всех нод)
+            proxy_server: {{ teleport_auth_server }}
+
+            # Пин центра сертификации (общий для всех нод)
+            ca_pin: "sha256:15069b6d75043ab3cc8"
+
+            # Логирование
+            log:
+              output: stderr
+              severity: INFO
+              format:
+                output: text
+
+            # Диагностический адрес (отключен)
+            diag_addr: ""
+
+          # Отключаем ненужные сервисы (auth и proxy)
+          auth_service:
+            enabled: "no"
+
+          proxy_service:
+            enabled: "no"
+
+          # Включаем только SSH
+          ssh_service:
+            enabled: "yes"
+            labels:
+              role: "{{ server_name }}"
+
+    - name: Перечитать systemd (на всякий случай)
+      command: systemctl daemon-reload
+      changed_when: false
+
+    - name: Включить и запустить teleport
+      systemd:
+        name: teleport
+        state: restarted
+        enabled: yes

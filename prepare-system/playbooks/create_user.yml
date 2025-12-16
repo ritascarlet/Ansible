@@ -1,0 +1,59 @@
+---
+- name: Создание пользователя vpnuser
+  hosts: servers
+  serial: 1
+  become: yes
+  vars:
+    vpn_user: vpnuser
+    vpn_user_shell: /bin/bash
+    vpn_user_groups: ["sudo"]
+    vpn_user_sudo_nopasswd: true
+  tasks:
+    - name: Генерировать случайный пароль для vpnuser
+      set_fact:
+        vpn_user_password: "{{ lookup('password', '/dev/null length=12 chars=ascii_letters,digits') }}"
+
+    - name: Создать пользователя vpnuser
+      user:
+        name: "{{ vpn_user }}"
+        shell: "{{ vpn_user_shell }}"
+        groups: "{{ vpn_user_groups }}"
+        state: present
+        createhome: no
+        home: /home/vpnuser
+        password: "{{ vpn_user_password }}"
+
+    - name: Создать директорию .ssh для vpnuser
+      file:
+        path: "/home/{{ vpn_user }}/.ssh"
+        state: directory
+        mode: "0700"
+        owner: "{{ vpn_user }}"
+        group: "{{ vpn_user }}"
+
+    - name: Добавить SSH ключ для vpnuser
+      authorized_key:
+        user: "{{ vpn_user }}"
+        key: "{{ vpnuser_pubkey }}"
+        state: present
+
+    - name: Настроить sudo без пароля для vpnuser
+      lineinfile:
+        path: /etc/sudoers
+        line: "{{ vpn_user }} ALL=(ALL) NOPASSWD:ALL"
+        state: present
+        validate: "visudo -cf %s"
+      when: vpn_user_sudo_nopasswd
+
+    - name: Записать пароль vpnuser в локальный файл
+      copy:
+        content: |
+          Сервер: {{ inventory_hostname }}
+          IP: {{ ansible_host }}
+          Пользователь: {{ vpn_user }}
+          Пароль: {{ vpn_user_password }}
+          Дата создания: {{ ansible_date_time.iso8601 }}
+        dest: "/etc/ansible/remnawave/remnanode/password/vpn_passwords_{{ inventory_hostname }}.txt"
+        mode: "0600"
+      delegate_to: localhost
+      become: no

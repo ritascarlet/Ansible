@@ -1,0 +1,51 @@
+---
+- name: Настройка SSH безопасности
+  hosts: servers
+  serial: 1
+  become: yes
+  vars:
+    ssh_port: 11041
+    ssh_root_login: false
+    ssh_password_auth: true # Оставляю пароли включенными для тестирования
+    ssh_pubkey_auth: true # Включаю SSH ключи
+  tasks:
+    - name: Создать резервную копию sshd_config
+      copy:
+        src: /etc/ssh/sshd_config
+        dest: /etc/ssh/sshd_config.backup
+        remote_src: yes
+        mode: "0600"
+
+    - name: Изменить SSH порт
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?Port "
+        line: "Port {{ ssh_port }}"
+        state: present
+
+    - name: Отключить root логин
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PermitRootLogin "
+        line: 'PermitRootLogin {{ "yes" if ssh_root_login else "no" }}'
+        state: present
+
+    - name: Оставить парольную аутентификацию выключенной
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PasswordAuthentication "
+        line: "PasswordAuthentication no"
+        state: present
+
+    - name: Включить аутентификацию по SSH ключам
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "^#?PubkeyAuthentication"
+        line: "PubkeyAuthentication yes"
+        state: present
+
+    - name: Перезапустить SSH сервис
+      systemd:
+        name: ssh
+        state: restarted
+        enabled: yes
